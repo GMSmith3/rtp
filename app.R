@@ -1,9 +1,33 @@
 #App to upload annual fund donor .csv and assign stewardship donor levels by account
-
 ui <- fluidPage(
-  fileInput("upload", NULL, buttonLabel = "Upload...", multiple = TRUE),
-  DTOutput("files"),
-  DTOutput("head")
+  # App title ----
+  titlePanel("RTP Stewardship Level Assignment Tool"),
+  
+  # Sidebar layout with input and output definitions ----
+  sidebarLayout(
+    
+    # Sidebar panel for inputs ----
+    sidebarPanel(
+      # Copy the line below to make a file upload manager
+      fileInput(inputId = "upload", 
+                label = h3("Select Donor Data File"), 
+                accept = c('text/csv',
+                           "text/comma-separated-values,text/plain",
+                           ".csv"),
+                buttonLabel = "Browse Files",
+                placeholder = "Awaiting .csv Selection"),
+      hr(),
+    ),
+      #Main panel for displaying outputs ---
+      mainPanel(
+        
+        #Output: Data file ---
+        DTOutput("files"),
+        
+        #Output: processed data file ---
+        DTOutput("head")
+      )
+  )  
 )
 server <- function(input, output) {
   output$files <- renderDT({
@@ -37,7 +61,7 @@ server <- function(input, output) {
     #Filter for giving period (if not imported that way):
     donors <- donors[CloseDate >= "2019-07-01" & CloseDate <= "2020-09-15"]
     #Calculate the sum of Amount column for every group in AccountID column - (remove NAs from the calculations). Call the new data - DonationTotalsDT:
-    DonationTotalsDT <- donors[,.(AccountName, InformalSalutation, MailingStreet, MailingCity, MailingState, MailingZip, DonationTotal = sum(Amount, na.rm = TRUE), Amount, PledgeAmount, PaymentSchedule, CloseDate, Fund, PaymentType, Type),by=AccountID]
+    DonationTotalsDT <- donors[,.(AccountName, InformalSalutation, MailingStreet, MailingCity, MailingState, MailingZip, DonationTotal = sum(Amount, na.rm = TRUE), CloseDate),by=AccountID]
     #Let's sort the list by AccountID to see how prevalent duplicate records are:
     SortByAcct <- DonationTotalsDT[order(AccountID),]
     #Remove the duplicate records from DonationTotalsDT based on Account ID (keep most recent row - with most recent donation):
@@ -94,7 +118,7 @@ server <- function(input, output) {
     Producers <- Producers %>% 
       arrange(gsub(".*\\s", "", AccountName))
     
-    View(Sorted)
+    return(Sorted)
   })
 
 }
