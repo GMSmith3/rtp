@@ -1,5 +1,9 @@
 # Load R packages
 library(shiny)
+library(shinythemes)
+library(data.table)
+library(dplyr)
+library(stringr)
 
 #App to upload annual fund donor .csv and assign stewardship donor levels by account
 ui <- fluidPage(
@@ -19,6 +23,18 @@ ui <- fluidPage(
                            ".csv"),
                 buttonLabel = "Browse Files",
                 placeholder = "Awaiting .csv Selection"),
+      hr(),
+      dateInput('date1CurrPer',
+                label = 'Start Date of Current Stewardship Period',
+                value = as.Date('2019-07-01')
+      ),
+      
+      dateInput('date2CurrPer',
+                label = paste('End Date of Current Stewardship Period Analysis'),
+                value = Sys.Date(),
+                format = "yyyy-mm-dd",
+                startview = 'month', weekstart = 0
+      ),
       hr(),
       selectInput("subsets",
                   label = h3("Select Stewardship Level to View:"),
@@ -48,7 +64,7 @@ ui <- fluidPage(
   )  
 )
 server <- function(input, output){
-  levelsAssigned <- reactive({
+  stewPeriodInput <- reactive({
     Data <- input$upload
     req(Data)
     Data <- fread(Data$datapath)
@@ -67,18 +83,20 @@ server <- function(input, output){
     } )
     #Select only the records where Fund = Annual Fund or is.na:
     Data <- Data[Fund =="Annual Fund" | Fund == ""]
-    #Find Pledge Payments:
-    pledgepayments <- Data[DonationRecordType == "Pledge Payment",]
-    #Find pledges:
-    pledges <- Data[DonationRecordType == "Pledge",]
+    Data[Fund == "", Fund := "Annual Fund"]
+    
     #Filter out rows based on values in specific columns to get subset on which I'm ready to calculate donation metrics
     #and donor stewardship levels.
     donors <- Data[((AccountRecordType %in% c("Household", "Individual")) &
                       (DonationRecordType %in% c("Donation", "PatronTicket Donation", "Matching", "Pledge Payment")) &
-                      (Stage != "Refunded") &
-                      (PaymentType != "Ticket Order Refund")),]
+                      (Stage != "Refunded")),]
+    
+    return(donors)
+  })
+  levelsAssigned <- reactive({
+    donors <- stewPeriodInput()
     #Filter for giving period (if not imported that way):
-    donors <- donors[CloseDate >= "2019-07-01" & CloseDate <= Sys.Date()]
+    donors <- donors[CloseDate >= input$date1CurrPer & CloseDate <= input$date2CurrPer]
     #Calculate the sum of Amount column for every group in AccountID column - (remove NAs from the calculations). Call the new data - DonationTotalsDT:
     DonationTotalsDT <- donors[,.(AccountName, InformalSalutation, MailingStreet, MailingCity, MailingState, MailingZip, DonationTotal = sum(Amount, na.rm = TRUE), CloseDate),by=AccountID]
     #Let's sort the list by AccountID to see how prevalent duplicate records are:
@@ -108,7 +126,7 @@ server <- function(input, output){
                                                                    "Directors",
                                                                    "Producers")))))]
     return(Sorted)
-    })
+  })
   levelDTs <- reactive({
     data <- levelsAssigned()
     level <- input$subsets
