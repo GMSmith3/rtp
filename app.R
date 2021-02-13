@@ -1,11 +1,14 @@
 # Load R packages
 library(shiny)
+library(DT)
+library(ggplot2)
 library(shinythemes)
 library(data.table)
 library(dplyr)
 library(stringr)
+library(lubridate)
 
-#App to upload annual fund donor .csv and assign stewardship donor levels by account
+#App to upload Annual Fund donor .csv and assign stewardship donor levels by account
 ui <- fluidPage(
   # App title ----
   titlePanel("RTP Stewardship Level Assignment Tool"),
@@ -49,17 +52,23 @@ ui <- fluidPage(
                   multiple = FALSE),
       hr(),
       #Output: Data file ---
-      DTOutput("file"),
+      DTOutput("file")
     ),
     #Main panel for displaying outputs ---
     mainPanel(
       
       #Add Download Button ---
-      downloadButton('downloadData', "Download"),
+      downloadButton('downloadData', "Download as .csv"),
       hr(),
       
       #Output: processed data file ---
-      DTOutput("donorLevels")
+      DTOutput("donorLevels"),
+      hr(),
+      #Output: plot
+      plotOutput('plot1'),
+      hr(),
+      #Output: plot2
+      plotOutput('plot2')
     )
   )  
 )
@@ -68,7 +77,11 @@ server <- function(input, output){
     Data <- input$upload
     req(Data)
     Data <- fread(Data$datapath)
-    Data$CloseDate<-as.Date(Data$CloseDate, format = "%m/%d/%y")
+    colnames(Data) <- c("accountID", "accountRecordType", "doNotMail", "donationRecordType", "informalSalutation",
+                        "accountName", "amount", "closeDate", "emailOptOut",  "email", "street", "city", "state",
+                        "zip", "fund", "frequency", "paymentType", "pledgeAmount", "paymentSchedule", "type", "stage",
+                        "fiscalYear", "lastDonationAmtPM", "lastDonationDatePM")
+    Data$closeDate<-as.Date(Data$closeDate, format = "%m/%d/%y")
     #r convert appropriate columns to factor
     Data[,c(2:4,9,15:17,19:22)] <- lapply((Data[,c(2:4,9,15:17,19:22)]), function(x) {
       as.factor(x)
@@ -81,53 +94,93 @@ server <- function(input, output){
     lapply((Data[,c(2:4,9,15:17,19:22)]), function(x) {
       class(x)
     } )
-    #Select only the records where Fund = Annual Fund or is.na:
-    Data <- Data[Fund =="Annual Fund" | Fund == ""]
-    Data[Fund == "", Fund := "Annual Fund"]
+    #Select only the records where fund = Annual Fund or is.na:
+    Data <- Data[fund =="Annual Fund" | fund == ""]
+    Data[fund == "", fund := "Annual Fund"]
     
     #Filter out rows based on values in specific columns to get subset on which I'm ready to calculate donation metrics
     #and donor stewardship levels.
-    donors <- Data[((AccountRecordType %in% c("Household", "Individual")) &
-                      (DonationRecordType %in% c("Donation", "PatronTicket Donation", "Matching", "Pledge Payment")) &
-                      (Stage != "Refunded")),]
+    donors <- Data[((accountRecordType %in% c("Household", "Individual")) &
+                      (donationRecordType %in% c("Donation", "PatronTicket Donation", "Matching", "Pledge Payment")) &
+                      (stage != "Refunded")),]
+    
+    #Filter for giving period (if not imported that way):
+    donors[(closeDate >= input$date1CurrPer) & (closeDate <= input$date2CurrPer),
+           currentStewardshipTotal := sum(amount, na.rm=TRUE), by = accountID][
+             (closeDate >= as.Date(ymd(input$date1CurrPer) - years(1))) & (closeDate <= as.Date((ymd(input$date1CurrPer) - days(1)) + years(1))),
+             prevStewardshipTotal := sum(amount, na.rm=TRUE), by = accountID]
+    #Select columns to return & sort by accountID then closeDate:
+    #donors[,.(accountName, InformalSalutation, MailingStreet, MailingCity, MailingState, MailingZip, DonationTotal = sum(amount, na.rm = TRUE), closeDate),by=accountID]
+    donors <- donors[,.(accountID, accountName, amount, closeDate, fiscalYear, prevStewardshipTotal, currentStewardshipTotal)][order(accountID, closeDate)]
     
     return(donors)
   })
+  
   levelsAssigned <- reactive({
     donors <- stewPeriodInput()
-    #Filter for giving period (if not imported that way):
-    donors <- donors[CloseDate >= input$date1CurrPer & CloseDate <= input$date2CurrPer]
-    #Calculate the sum of Amount column for every group in AccountID column - (remove NAs from the calculations). Call the new data - DonationTotalsDT:
-    DonationTotalsDT <- donors[,.(AccountName, InformalSalutation, MailingStreet, MailingCity, MailingState, MailingZip, DonationTotal = sum(Amount, na.rm = TRUE), CloseDate),by=AccountID]
-    #Let's sort the list by AccountID to see how prevalent duplicate records are:
-    SortByAcct <- DonationTotalsDT[order(AccountID),]
-    #Remove the duplicate records from DonationTotalsDT based on Account ID (keep most recent row - with most recent donation):
-    UniqueDT <- unique(DonationTotalsDT[order(CloseDate)], by="AccountID", fromLast = TRUE)
+    #Remove the duplicate records from DonationTotalsDT based on account ID (keep most recent row - with most recent donation):
+    #uniqueDT <- unique(donors, by="accountID", fromLast = TRUE)
     #Let's filter the data table to include only records with DonationTotal >= 125:
-    DonationTotal125DT <- UniqueDT[DonationTotal >= 125,]
-    #Let's sort the list by AccountID to see how prevalent duplicate records are:
-    SortByAcct <- DonationTotalsDT[order(AccountID),]
-    #Remove the duplicate records from DonationTotalsDT based on Account ID (keep most recent row - with most recent donation):
-    UniqueDT <- unique(DonationTotalsDT[order(CloseDate)], by="AccountID", fromLast = TRUE)
-    #Let's filter the data table to include only records with DonationTotal >= 125:
-    DonationTotal125DT <- UniqueDT[DonationTotal >= 125,]
+    #curStewards <- uniqueDT[currentStewardshipTotal >= 125,]
+    curStewards <- donors[currentStewardshipTotal >= 125,]
     #Let's sort the data table in ascending order:
-    Sorted <- DonationTotal125DT[order(DonationTotal),]
+    #sorted <- curStewards[order(currentStewardshipTotal),]
+    sorted <- curStewards[order(currentStewardshipTotal, accountID),]
     
-    Sorted[, DonorLevel := fifelse(DonationTotal<250,
+    sorted[, DonorLevel := fifelse(currentStewardshipTotal<250,
                                    "Supporters",
-                                   fifelse(DonationTotal>=250 & DonationTotal<500,
+                                   fifelse(currentStewardshipTotal>=250 & currentStewardshipTotal<500,
                                            "Investors",
-                                           fifelse(DonationTotal>=500 & DonationTotal<1000,
+                                           fifelse(currentStewardshipTotal>=500 & currentStewardshipTotal<1000,
                                                    "Underwriters",
-                                                   fifelse(DonationTotal>=1000 & DonationTotal<2500,
+                                                   fifelse(currentStewardshipTotal>=1000 & currentStewardshipTotal<2500,
                                                            "Performers",
-                                                           fifelse(DonationTotal>=2500 & DonationTotal<5000,
+                                                           fifelse(currentStewardshipTotal>=2500 & currentStewardshipTotal<5000,
                                                                    "Directors",
                                                                    "Producers")))))]
-    return(Sorted)
+    return(sorted)
   })
+  
   levelDTs <- reactive({
+    data <- levelsAssigned()
+    level <- input$subsets
+    #Add medianDonation and donationCount columns to the datatable
+    data[, `:=` (donationCount = .N, medianDonation = round(median(amount, na.rm = FALSE), 2)), by=accountID]
+    
+    data <- unique(sorted, by="accountID", fromLast = FALSE)[, .(accountID, accountName, donationCount, medianDonation, prevStewardshipTotal, currentStewardshipTotal, DonorLevel)]
+    
+    #Segment donors by level and alphabetization by last name
+    Supporters <- sorted_unique[currentStewardshipTotal<250,] %>%
+      arrange(gsub(".*\\s", "", accountName))
+    Investors <- sorted_unique[currentStewardshipTotal>=250 & currentStewardshipTotal<500,] %>%
+      arrange(gsub(".*\\s", "", accountName))
+    Underwriters <- sorted_unique[currentStewardshipTotal>=500 & currentStewardshipTotal<1000,] %>%
+      arrange(gsub(".*\\s", "", accountName))
+    Performers <- sorted_unique[currentStewardshipTotal>=1000 & currentStewardshipTotal<2500,] %>%
+      arrange(gsub(".*\\s", "", accountName)) 
+    Directors <- sorted_unique[currentStewardshipTotal>=2500 & currentStewardshipTotal<5000,] %>%
+      arrange(gsub(".*\\s", "", accountName))
+    Producers <- sorted_unique[currentStewardshipTotal>=5000,] %>%
+      arrange(gsub(".*\\s", "", accountName))
+    
+    if (level == "Supporters") {
+      return(Supporters)
+    } else if (level == "Investors") {
+      return(Investors)
+    } else if (level == "Underwriters") {
+      return(Underwriters)
+    } else if (level == "Performers") {
+      return(Performers)
+    } else if (level == "Directors") {
+      return(Directors)
+    } else if (level == "Producers") {
+      return(Producers)
+    } else {
+      return(rbind(Supporters, Investors, Underwriters, Performers, Directors, Producers))
+    }
+  })
+  
+  levelViz <- reactive({
     data <- levelsAssigned()
     level <- input$subsets
     
@@ -147,12 +200,42 @@ server <- function(input, output){
       return(data)
     }
   })
+  
+  output$plot1 <- renderPlot({
+    donations <- levelViz()
+    
+    ggplot(data = donations[!(accountName %in% c('Barbara and James McCarthy','Wells Fargo Community Support Campaign')),], aes(x = closeDate, y = amount, size = amount, color = DonorLevel))+
+      geom_point(stat='identity') +
+      scale_x_date(guide = guide_axis(angle = 45),date_breaks = '1 month',  date_labels = '%B/%Y') +
+      ggtitle("Annual Fund Giving", subtitle = "July 1, 2018 - September 9, 2020") +
+      xlab("Time") + ylab("Amount($)") +
+      theme_bw() + theme(legend.position = "left") +
+      theme(plot.title = element_text(hjust = 0.5)) +
+      theme(plot.subtitle = element_text(hjust = 0.5)) +
+      guides(size = F)
+  })
+  
+  output$plot2 <- renderPlot({
+    data <- levelViz()
+    
+    ggplot(data = data[!(accountName %in% c('Barbara and James McCarthy','Wells Fargo Community Support Campaign')),], aes(x = accountName, y = amount, fill= fiscalYear))+
+      geom_bar(stat='sum', position = 'dodge', color = 'black', size = .25) +
+      scale_x_discrete(guide = guide_axis(angle = 45)) +
+      ggtitle("Annual Fund Giving", subtitle = "July 1, 2018 - November 14, 2020") +
+      xlab("Donor Account Name") + ylab("Period Donation Total") +
+      theme_bw() + theme(legend.position = "left") +
+      theme(plot.title = element_text(hjust = 0.5)) +
+      theme(plot.subtitle = element_text(hjust = 0.5)) +
+      guides(size = F)
+    
+  })
+  
   output$donorLevels <- renderDT({
     levelDTs()
   })
   output$downloadData <- downloadHandler(
     filename = function() {
-      paste(input$subsets, input$filetype, sep=".")
+      paste0(input$subsets, '_', Sys.Date(), '.csv')
     },
     content = function(file) {
       write.csv(levelDTs(), file, row.names = FALSE)
